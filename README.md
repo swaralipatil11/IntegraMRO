@@ -48,51 +48,38 @@ An edge-deployable, full-stack computer vision system designed for autonomous co
 
 ```mermaid
 graph TD
-    %% Frontend Subsystem
-    subgraph Client [Client UI - React 19 / Vite]
-        A[HTML5 Webcam / Video Element]
-        B[File Upload: Dropzone]
-        C["Hls.js live player & Seekable player"]
-        D[Canvas Overlay Bounding Boxes]
-        E[Custom SVG Analytics Charts]
+    %% Define Nodes for Webcam Pipeline
+    subgraph Webcam ["1. Live Webcam Scan (Real-Time)"]
+        Cam[Webcam Stream] -->|150ms Frame Blobs| API1[FastAPI Endpoint]
+        API1 -->|ONNX Inference| YOLO1[YOLOv8 Model]
+        YOLO1 -->|JSON Coordinates| Canvas[Canvas Overlay UI]
     end
 
-    %% Backend Subsystem
-    subgraph Server [FastAPI ASGI Server / Uvicorn]
-        F[POST /api/process-frame]
-        G[POST /api/upload-video]
-        H["GET /api/tasks/{task_id}"]
-        I["GET /api/videos/{task_id}"]
-        J["GET /api/videos/{task_id}/download"]
-        DB[("SQLite database data.db")]
+    %% Define Nodes for Video Pipeline
+    subgraph Video ["2. Drone Video Analysis (Async)"]
+        Upload[Video File] -->|Upload Video| API2[FastAPI Background Task]
+        API2 -->|Submit| Thread[ThreadPool Worker]
+        Thread -->|Frame-by-Frame ONNX| YOLO2[YOLOv8 Model]
+        
+        %% Outputs
+        YOLO2 -->|Save alert metadata| DB[(SQLite Database)]
+        YOLO2 -->|Segment HLS| HLS[FFmpeg HLS Player]
+        YOLO2 -->|Compile MP4| MP4[Final Video Download]
+        
+        %% Dashboard Visuals
+        DB & HLS -->|Visualize & Stream| Dash[SVG Dashboard & seekable Player]
     end
 
-    %% Processing Subsystems
-    subgraph Engine [Inference & Video Rendering Engine]
-        K[YOLOv8 ONNX Model best.onnx]
-        L["OpenCV VideoWriter AVC1/H.264"]
-        M[FFmpeg Subprocess HLS Stream]
-        N[ThreadPool Executor Worker]
-    end
+    %% Node styling classes for high-contrast cyberpunk HUD look
+    classDef client fill:#121824,stroke:#58a6ff,stroke-width:2px,color:#fff;
+    classDef server fill:#161e2e,stroke:#38d056,stroke-width:2px,color:#fff;
+    classDef model fill:#161e2e,stroke:#ff5f40,stroke-width:2px,color:#fff;
+    classDef db fill:#0a0e14,stroke:#f0883e,stroke-width:2px,color:#fff;
 
-    %% Data Flow
-    A -->|POST image blob| F
-    F -->|ONNX Inference| K
-    K -->|Returns JSON detections| D
-    
-    B -->|POST video file| G
-    G -->|Submit to ThreadPool| N
-    N -->|Process frames| K
-    N -->|Save alert metadata| DB
-    N -->|Output HLS stream| M
-    N -->|Save MP4 file| L
-    
-    M -->|Stream HLS chunks| C
-    C -->|GET task status polling| H
-    H -->|Query DB| DB
-    
-    C -->|Downloads MP4 file| J
-    I -->|Streams final MP4| C
+    class Cam,Canvas,Upload,Dash client;
+    class API1,API2,Thread,HLS,MP4 server;
+    class YOLO1,YOLO2 model;
+    class DB db;
 ```
 
 ### Data Pipeline Mechanics
