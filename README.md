@@ -52,7 +52,7 @@ graph TD
     subgraph Client [Client UI - React 19 / Vite]
         A[HTML5 Webcam / Video Element]
         B[File Upload: Dropzone]
-        C[Hls.js live player & Seekable player]
+        C["Hls.js live player & Seekable player"]
         D[Canvas Overlay Bounding Boxes]
         E[Custom SVG Analytics Charts]
     end
@@ -61,16 +61,16 @@ graph TD
     subgraph Server [FastAPI ASGI Server / Uvicorn]
         F[POST /api/process-frame]
         G[POST /api/upload-video]
-        H[GET /api/tasks/{task_id}]
-        I[GET /api/videos/{task_id}]
-        J[GET /api/videos/{task_id}/download]
-        DB[(SQLite database data.db)]
+        H["GET /api/tasks/{task_id}"]
+        I["GET /api/videos/{task_id}"]
+        J["GET /api/videos/{task_id}/download"]
+        DB[("SQLite database data.db")]
     end
 
     %% Processing Subsystems
     subgraph Engine [Inference & Video Rendering Engine]
         K[YOLOv8 ONNX Model best.onnx]
-        L[OpenCV VideoWriter AVC1/H.264]
+        L["OpenCV VideoWriter AVC1/H.264"]
         M[FFmpeg Subprocess HLS Stream]
         N[ThreadPool Executor Worker]
     end
