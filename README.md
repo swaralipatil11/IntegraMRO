@@ -109,7 +109,7 @@ This method orchestrates both services and compiles system libraries (FFmpeg, sy
    ```bash
    docker-compose up --build
    ```
-3. Open `http://localhost` in your browser. (The React client runs on port `80`, proxying API calls to the FastAPI container on port `8000`).
+3. Open `http://localhost` in your browser. (The React client runs on port `80`, communicating dynamically via client-side requests with the FastAPI container on port `8000`).
 
 ### Option B: Manual Setup
 
@@ -150,3 +150,14 @@ This method orchestrates both services and compiles system libraries (FFmpeg, sy
    npm run dev
    ```
    *The frontend client will run on http://localhost:5173.*
+
+---
+
+## Production & Architectural Notes
+
+- **Dynamic API Targeting:** The web client automatically resolves the backend base URL dynamically (connecting to port `8000` on the hostname from which the client is accessed).
+- **Production Reverse Proxy / HTTPS:** If deploying this pipeline with HTTPS support in production, you should update the Nginx configuration inside the frontend Docker image to act as a reverse proxy, mapping `/api/` traffic directly to the backend container over standard SSL. This prevents modern browsers from blocking mixed HTTP/HTTPS content.
+- **Inference Concurrency & Lock:** To prevent model corruption and memory faults during concurrent drone video analyses and live webcam scans, YOLOv8 inference is protected by a global thread lock.
+- **SQLite WAL & Timeout:** SQLite database queries use connection timeouts (`30.0s`) and Write-Ahead Logging (WAL) mode to resolve write-locking conflicts under concurrent task telemetry uploads.
+- **Memory Optimization:** Large file video uploads are read and written to disk in `1MB` chunks, preventing edge-deployment memory bloat or out-of-memory container crashes.
+- **Web-Playable Outputs:** Completed inspection videos are automatically re-encoded to standard H.264 (`yuv420p` color format) with fast-start metadata (`+faststart`) to guarantee immediate progressive playback and seeking inside all standard web browsers.

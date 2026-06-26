@@ -16,27 +16,33 @@ from ultralytics import YOLO
 # Import persistence layer
 from database import save_task, get_task, add_anomaly
 
+# Create absolute directory paths relative to this file
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_VIDEOS_DIR = os.path.join(BASE_DIR, "static", "videos")
+TEMP_UPLOADS_DIR = os.path.join(BASE_DIR, "temp_uploads")
+
 # Create directories
-os.makedirs("static/videos", exist_ok=True)
-os.makedirs("temp_uploads", exist_ok=True)
+os.makedirs(STATIC_VIDEOS_DIR, exist_ok=True)
+os.makedirs(TEMP_UPLOADS_DIR, exist_ok=True)
 
 app = FastAPI(title="Concrete Defect Detection API")
 
 # Configure CORS to allow frontend connections
+# Set allow_credentials to False when allow_origins is wildcard to prevent Starlette crash
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Adjust as needed for production security
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Serves static files (processed videos and HLS streams)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 # Load custom YOLO model (compile to ONNX if needed)
-MODEL_PT_PATH = "best.pt"
-MODEL_ONNX_PATH = "best.onnx"
+MODEL_PT_PATH = os.path.join(BASE_DIR, "best.pt")
+MODEL_ONNX_PATH = os.path.join(BASE_DIR, "best.onnx")
 
 if not os.path.exists(MODEL_PT_PATH):
     raise RuntimeError(f"Model file '{MODEL_PT_PATH}' not found. Please place it in the workspace directory.")
@@ -60,6 +66,10 @@ print("YOLO model loaded successfully.")
 # This controls concurrency and prevents GIL blocking since ORT/OpenCV release the GIL
 executor = ThreadPoolExecutor(max_workers=2)
 
+# Lock to serialize concurrent YOLO model inferences (YOLO is not thread-safe)
+import threading
+model_lock = threading.Lock()
+
 def process_video_background(task_id: str, input_path: str, output_filename: str):
     save_task(task_id, "processing", 0)
     
@@ -78,19 +88,20 @@ def process_video_background(task_id: str, input_path: str, output_filename: str
     if total_frames <= 0:
         total_frames = 1
         
-    # Paths for outputs
-    output_mp4_path = os.path.join("static/videos", output_filename)
-    hls_dir = os.path.join("static/videos", task_id)
+    # Paths for outputs using absolute static directory
+    output_mp4_path = os.path.join(STATIC_VIDEOS_DIR, output_filename)
+    temp_output_mp4_path = output_mp4_path + ".raw.mp4"
+    hls_dir = os.path.join(STATIC_VIDEOS_DIR, task_id)
     os.makedirs(hls_dir, exist_ok=True)
     hls_playlist = os.path.join(hls_dir, "playlist.m3u8")
     
-    # 1. Setup OpenCV VideoWriter for MP4 file download
-    # Try AVC1 codec for better web compatibility, fall back to mp4v if not available
+    # 1. Setup OpenCV VideoWriter for the raw temporary MP4 file
+    # We will write frames to a raw file first, and later optimize it using FFmpeg for web streaming.
     fourcc = cv2.VideoWriter_fourcc(*'avc1')
-    out = cv2.VideoWriter(output_mp4_path, fourcc, fps, (width, height))
+    out = cv2.VideoWriter(temp_output_mp4_path, fourcc, fps, (width, height))
     if not out.isOpened():
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_mp4_path, fourcc, fps, (width, height))
+        out = cv2.VideoWriter(temp_output_mp4_path, fourcc, fps, (width, height))
         
     # 2. Setup FFmpeg subprocess pipe for real-time HLS segmenting
     # Raw BGR24 frames written to stdin are compiled and segmented directly into HLS
@@ -130,8 +141,9 @@ def process_video_background(task_id: str, input_path: str, output_filename: str
                 
             start_time = time.time()
             
-            # Run YOLO ONNX inference
-            results = model(frame, verbose=False, conf=0.30)[0]
+            # Run YOLO ONNX inference inside the thread-safe lock
+            with model_lock:
+                results = model(frame, verbose=False, conf=0.30)[0]
             
             latency_ms = (time.time() - start_time) * 1000
             fps_display = 1000 / latency_ms if latency_ms > 0 else fps
@@ -196,6 +208,28 @@ def process_video_background(task_id: str, input_path: str, output_filename: str
             if ffmpeg_proc.stdin:
                 ffmpeg_proc.stdin.close()
             ffmpeg_proc.wait()
+            
+        # Post-process the raw MP4 to compile browser-compatible H264 with +faststart (MOOV atom at front)
+        try:
+            h264_temp_path = output_mp4_path + ".h264.mp4"
+            ffmpeg_convert_cmd = [
+                "ffmpeg", "-y",
+                "-i", temp_output_mp4_path,
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                h264_temp_path
+            ]
+            subprocess.run(ffmpeg_convert_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            if os.path.exists(h264_temp_path):
+                os.replace(h264_temp_path, output_mp4_path)
+                if os.path.exists(temp_output_mp4_path):
+                    os.remove(temp_output_mp4_path)
+        except Exception as conv_err:
+            print(f"Warning: Failed to optimize MP4 with FFmpeg: {conv_err}")
+            # Fallback: rename raw file if optimization failed
+            if os.path.exists(temp_output_mp4_path) and not os.path.exists(output_mp4_path):
+                os.rename(temp_output_mp4_path, output_mp4_path)
         
         # Cleanup temporary input file
         if os.path.exists(input_path):
@@ -213,6 +247,12 @@ def process_video_background(task_id: str, input_path: str, output_filename: str
                 if ffmpeg_proc.stdin:
                     ffmpeg_proc.stdin.close()
                 ffmpeg_proc.wait()
+            except:
+                pass
+        # Cleanup temporary outputs on failure
+        if os.path.exists(temp_output_mp4_path):
+            try:
+                os.remove(temp_output_mp4_path)
             except:
                 pass
         if os.path.exists(input_path):
@@ -233,13 +273,13 @@ async def upload_video(file: UploadFile = File(...)):
     task_id = str(uuid.uuid4())
     file_ext = os.path.splitext(file.filename)[1] or ".mp4"
     temp_input_filename = f"{task_id}_input{file_ext}"
-    temp_input_path = os.path.join("temp_uploads", temp_input_filename)
+    temp_input_path = os.path.join(TEMP_UPLOADS_DIR, temp_input_filename)
     
-    # Save video locally to temp space
+    # Save video locally to temp space in chunks to prevent memory bloat
     try:
         with open(temp_input_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
+            while chunk := await file.read(1024 * 1024):  # 1MB chunks
+                f.write(chunk)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to write file: {str(e)}")
         
@@ -274,8 +314,9 @@ async def process_frame(file: UploadFile = File(...)):
         height, width = frame.shape[:2]
         start_time = time.time()
         
-        # Inference with YOLOv8 ONNX model
-        results = model(frame, verbose=False, conf=0.30)[0]
+        # Inference with YOLOv8 ONNX model inside the thread-safe lock
+        with model_lock:
+            results = model(frame, verbose=False, conf=0.30)[0]
         
         latency_ms = (time.time() - start_time) * 1000
         
@@ -315,7 +356,7 @@ async def health():
 @app.get("/api/videos/{task_id}")
 async def get_video_display(task_id: str):
     filename = f"{task_id}_processed.mp4"
-    filepath = os.path.join("static/videos", filename)
+    filepath = os.path.join(STATIC_VIDEOS_DIR, filename)
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="Processed video not found")
     
@@ -325,7 +366,7 @@ async def get_video_display(task_id: str):
 @app.get("/api/videos/{task_id}/download")
 async def download_video(task_id: str):
     filename = f"{task_id}_processed.mp4"
-    filepath = os.path.join("static/videos", filename)
+    filepath = os.path.join(STATIC_VIDEOS_DIR, filename)
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="Processed video not found")
         

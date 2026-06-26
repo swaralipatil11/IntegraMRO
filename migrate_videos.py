@@ -2,9 +2,10 @@ import os
 import cv2
 
 def migrate_existing_videos():
-    video_dir = "static/videos"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    video_dir = os.path.join(script_dir, "backend", "static", "videos")
     if not os.path.exists(video_dir):
-        print("No videos directory found.")
+        print(f"No videos directory found at {video_dir}")
         return
         
     for filename in os.listdir(video_dir):

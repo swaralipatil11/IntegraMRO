@@ -6,13 +6,16 @@ from datetime import datetime
 DB_PATH = os.path.join(os.path.dirname(__file__), "data.db")
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
+    
+    # Enable WAL mode for concurrent write resilience
+    cursor.execute("PRAGMA journal_mode=WAL;")
     
     # Create tasks table
     cursor.execute("""

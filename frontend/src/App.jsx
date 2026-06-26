@@ -2,7 +2,14 @@ import React, { useState, useRef, useEffect } from 'react';
 import Hls from 'hls.js';
 import './App.css';
 
-const API_BASE_URL = 'http://localhost:8000';
+const getApiBaseUrl = () => {
+  if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+    return 'http://localhost:8000';
+  }
+  return `${window.location.protocol}//${window.location.hostname}:8000`;
+};
+
+const API_BASE_URL = getApiBaseUrl();
 
 // Helper components for Custom SVG Analytics Charts
 function DefectBarChart({ counts }) {
