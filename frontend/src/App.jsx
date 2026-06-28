@@ -1,3 +1,15 @@
+/**
+ * MRO Vision Control Dashboard
+ * Developer Notes:
+ * - Client-Side Performance: Webcam frames are processed using a request-congestion guard (isProcessingFrameRef)
+ *   to avoid browser freeze under load. Box overlays are drawn on a canvas layer matching native video coordinates.
+ *   This avoids heavy image payload transfers.
+ *   The canvas element dimensions align dynamically on responsive grid layouts.
+ * - Reactive Analytics: The bar/density charts are compiled directly from filtered states in-memory.
+ *   This provides real-time updates as user toggles category filters or confidence thresholds.
+ * - Video Streaming: Utilizes hls.js player configurations to stream raw background video frames 
+ *   while the compilation and compression subprocesses run concurrently on the FastAPI host.
+ */
 import React, { useState, useRef, useEffect } from 'react';
 import Hls from 'hls.js';
 import './App.css';
@@ -243,6 +255,10 @@ function App() {
   const [dragActive, setDragActive] = useState(false);
   const [uploadError, setUploadError] = useState(null);
 
+  // Filtering states
+  const [filterClass, setFilterClass] = useState('all');
+  const [minConfidence, setMinConfidence] = useState(0.3);
+
   // Refs
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -251,6 +267,7 @@ function App() {
   const webcamIntervalRef = useRef(null);
   const fileInputRef = useRef(null);
   const frameCountRef = useRef(0);
+  const isProcessingFrameRef = useRef(false);
 
   // Hls.js instance state
   const [hlsInstance, setHlsInstance] = useState(null);
@@ -322,6 +339,7 @@ function App() {
     
     setLiveDetections([]);
     setLiveMetrics({ fps: 0, latency: 0, frameCount: 0 });
+    isProcessingFrameRef.current = false;
     
     // Clear overlay canvas
     if (overlayCanvasRef.current) {
@@ -382,6 +400,9 @@ function App() {
   };
 
   const captureAndProcessFrame = () => {
+    // If a frame is already being processed, skip this tick to avoid network/CPU congestion
+    if (isProcessingFrameRef.current) return;
+    
     const video = videoRef.current;
     const canvas = canvasRef.current;
     
@@ -393,8 +414,13 @@ function App() {
     
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     
+    isProcessingFrameRef.current = true;
+    
     canvas.toBlob(async (blob) => {
-      if (!blob) return;
+      if (!blob) {
+        isProcessingFrameRef.current = false;
+        return;
+      }
       
       const formData = new FormData();
       formData.append('file', blob, 'frame.jpg');
@@ -439,6 +465,8 @@ function App() {
         }
       } catch (err) {
         console.error("Frame processing error:", err);
+      } finally {
+        isProcessingFrameRef.current = false;
       }
     }, 'image/jpeg', 0.8);
   };
@@ -624,13 +652,31 @@ function App() {
     setUploadError(null);
   };
 
+  const filteredLiveLog = liveLog.filter(log => {
+    const matchClass = filterClass === 'all' || log.class === filterClass;
+    const matchConf = log.confidence >= minConfidence;
+    return matchClass && matchConf;
+  });
+
+  const filteredVideoAlerts = videoAlerts.filter(alert => {
+    const cls = alert.defect_metadata.detected_class;
+    const conf = alert.defect_metadata.confidence_score;
+    const matchClass = filterClass === 'all' || cls === filterClass;
+    const matchConf = conf >= minConfidence;
+    return matchClass && matchConf;
+  });
+
   const defectCount = activeTab === 'webcam' 
     ? liveLog.length 
     : videoAlerts.length;
 
+  const filteredCount = activeTab === 'webcam'
+    ? filteredLiveLog.length
+    : filteredVideoAlerts.length;
+
   // Aggregate statistics for custom SVG charts
   const getDefectCounts = () => {
-    const alerts = activeTab === 'webcam' ? liveLog : videoAlerts;
+    const alerts = activeTab === 'webcam' ? filteredLiveLog : filteredVideoAlerts;
     const counts = { crack: 0, rebar: 0, spalling: 0, 'unexposed bar': 0 };
     alerts.forEach(a => {
       const cls = activeTab === 'webcam' ? a.class : a.defect_metadata.detected_class;
@@ -640,7 +686,7 @@ function App() {
   };
 
   const getSpatialData = () => {
-    const alerts = activeTab === 'webcam' ? liveLog : videoAlerts;
+    const alerts = activeTab === 'webcam' ? filteredLiveLog : filteredVideoAlerts;
     if (alerts.length === 0) return [];
     
     const positions = alerts.map(a => {
@@ -845,13 +891,16 @@ function App() {
         <div className="side-panel">
           <div className="telemetry-header">
             <span>ANOMALY TELEMETRY</span>
-            {defectCount > 0 && <span style={{ color: 'var(--accent-red)', animation: 'pulse 1.5s infinite' }}>▲ ALERTS LOGGED</span>}
+            {filteredCount > 0 && <span style={{ color: 'var(--accent-red)', animation: 'pulse 1.5s infinite' }}>▲ ALERTS LOGGED</span>}
           </div>
 
           <div className="telemetry-summary">
             <div className="metric-card">
-              <div className={`metric-val ${defectCount > 0 ? 'alert' : 'ok'}`}>{defectCount}</div>
-              <div className="metric-lbl">TOTAL ALERTS</div>
+              <div className={`metric-val ${filteredCount > 0 ? 'alert' : 'ok'}`}>
+                {filteredCount}
+                {filteredCount !== defectCount && <span className="metric-subval"> / {defectCount}</span>}
+              </div>
+              <div className="metric-lbl">MATCHING ALERTS</div>
             </div>
             <div className="metric-card">
               <div className="metric-val" style={{ color: 'var(--accent-blue)' }}>
@@ -877,6 +926,46 @@ function App() {
             </button>
           </div>
 
+          {sidebarTab === 'logs' && (
+            <div className="filter-toolbar">
+              <div className="filter-row">
+                <select 
+                  value={filterClass} 
+                  onChange={(e) => setFilterClass(e.target.value)}
+                  className="filter-select"
+                >
+                  <option value="all">ALL CLASSES</option>
+                  <option value="crack">CRACK</option>
+                  <option value="rebar">REBAR</option>
+                  <option value="spalling">SPALLING</option>
+                  <option value="unexposed bar">UNEXPOSED BAR</option>
+                </select>
+                {activeTab === 'upload' && taskId && (
+                  <a 
+                    href={`${API_BASE_URL}/api/tasks/${taskId}/export`} 
+                    download 
+                    className="btn btn-export"
+                    title="Export CSV Telemetry"
+                  >
+                    EXPORT CSV
+                  </a>
+                )}
+              </div>
+              <div className="filter-row filter-confidence-container">
+                <span className="filter-conf-label">Min Conf: {Math.round(minConfidence * 100)}%</span>
+                <input 
+                  type="range" 
+                  min="0.3" 
+                  max="1.0" 
+                  step="0.05" 
+                  value={minConfidence} 
+                  onChange={(e) => setMinConfidence(parseFloat(e.target.value))}
+                  className="filter-range"
+                />
+              </div>
+            </div>
+          )}
+
           {sidebarTab === 'charts' ? (
             <div className="charts-container" style={{ display: 'flex', flexDirection: 'column', gap: '15px', overflowY: 'auto', flex: 1 }}>
               <DefectBarChart counts={getDefectCounts()} />
@@ -886,15 +975,15 @@ function App() {
             activeTab === 'webcam' ? (
               // Live logs view
               <div className="logs-list">
-                {liveLog.length === 0 ? (
+                {filteredLiveLog.length === 0 ? (
                   <div className="log-empty">
                     <svg className="empty-icon" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
                     </svg>
-                    <span>No defect detected. Structure appears sound.</span>
+                    <span>No matching defects logged.</span>
                   </div>
                 ) : (
-                  liveLog.map((log) => (
+                  filteredLiveLog.map((log) => (
                     <div key={log.id} className={`log-item ${log.class}`}>
                       <div className="log-row-top">
                         <span className={`defect-badge ${log.class}`}>{log.class}</span>
@@ -911,13 +1000,13 @@ function App() {
             ) : (
               // Processed video alerts view
               <div className="logs-list">
-                {videoAlerts.length === 0 ? (
+                {filteredVideoAlerts.length === 0 ? (
                   <div className="log-empty">
                     <svg className="empty-icon" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                     </svg>
                     {processedVideoUrl ? (
-                      <span>Scan complete: No structural anomalies identified.</span>
+                      <span>No matching structural anomalies logged.</span>
                     ) : (
                       <span>Awaiting drone video analysis stream upload...</span>
                     )}
@@ -927,7 +1016,7 @@ function App() {
                     <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '5px', textAlign: 'center' }}>
                       💡 Tip: Click on any alert to jump directly to that frame in the video!
                     </p>
-                    {videoAlerts.map((alert, index) => {
+                    {filteredVideoAlerts.map((alert, index) => {
                       const cls = alert.defect_metadata.detected_class;
                       const conf = alert.defect_metadata.confidence_score;
                       const pos = alert.payload_telemetry.estimated_tunnel_position_m;

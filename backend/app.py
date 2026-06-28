@@ -1,3 +1,13 @@
+"""
+MRO Vision Control API - Core Application Server
+Developer Notes:
+- Thread Safety: YOLOv8 is not inherently thread-safe for concurrent predictions. A model mutex lock 
+  ('model_lock') is used to serialize inference calls across webcam and background video queues.
+- Asynchronous Workers: Video processing is handled asynchronously via ThreadPoolExecutor. Raw frames 
+  are piped to FFmpeg in real-time to generate HLS streams, allowing the client to watch processing logs.
+- Memory Control: File chunks are processed using 1MB streams, and telemetry exports are compiled 
+  entirely in-memory via io.StringIO to minimize edge-disk write cycles and SSD wear.
+"""
 import os
 import uuid
 import time
@@ -5,13 +15,16 @@ import base64
 import cv2
 import numpy as np
 import subprocess
+import shutil
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from ultralytics import YOLO
+import csv
+import io
 
 # Import persistence layer
 from database import save_task, get_task, add_anomaly
@@ -24,6 +37,11 @@ TEMP_UPLOADS_DIR = os.path.join(BASE_DIR, "temp_uploads")
 # Create directories
 os.makedirs(STATIC_VIDEOS_DIR, exist_ok=True)
 os.makedirs(TEMP_UPLOADS_DIR, exist_ok=True)
+
+# Verify FFmpeg availability on startup
+if not shutil.which("ffmpeg"):
+    print("WARNING: 'ffmpeg' executable not found in system PATH.")
+    print("Drone video transcoding and HLS stream segmenting will fail.")
 
 app = FastAPI(title="Concrete Defect Detection API")
 
@@ -375,6 +393,47 @@ async def download_video(task_id: str):
         media_type="video/mp4", 
         filename=f"processed_inspection_{task_id[:8]}.mp4"
     )
+
+@app.get("/api/tasks/{task_id}/export")
+async def export_task_csv(task_id: str):
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+        
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Write header
+    writer.writerow([
+        "Frame Index", 
+        "Timestamp", 
+        "Detected Class", 
+        "Confidence Score", 
+        "Estimated Tunnel Position (m)", 
+        "Sensor ID",
+        "Bounding Box [x1, y1, x2, y2]"
+    ])
+    
+    for r in task.get("results", []):
+        meta = r.get("defect_metadata", {})
+        telemetry = r.get("payload_telemetry", {})
+        writer.writerow([
+            r.get("frame_index"),
+            r.get("timestamp"),
+            meta.get("detected_class"),
+            meta.get("confidence_score"),
+            telemetry.get("estimated_tunnel_position_m"),
+            telemetry.get("sensor_id"),
+            str(meta.get("bounding_box_xyxy", []))
+        ])
+        
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=inspection_report_{task_id[:8]}.csv"}
+    )
+
 
 if __name__ == "__main__":
     import uvicorn

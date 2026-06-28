@@ -64,7 +64,7 @@ results = model.train(
     imgsz=640,
     batch=16,
     device=device,
-    name="cern_baseline_yolov8n"
+    name="concrete_baseline_yolov8n"
 )
 
 # --- CELL 4 ---
@@ -81,7 +81,7 @@ for root, dirs, files in os.walk("/content/runs"):
 from google.colab import files
 
 # Directly triggers a browser download for your best weights
-files.download('/content/runs/detect/cern_baseline_yolov8n/weights/best.pt')
+files.download('/content/runs/detect/concrete_baseline_yolov8n/weights/best.pt')
 
 # --- CELL 6 ---
 # Day 2 - Cell 1: Export Custom YOLOv8 Model to ONNX Format
