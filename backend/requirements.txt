@@ -8,4 +8,4 @@ fastapi>=0.100.0
 uvicorn>=0.20.0
 python-multipart>=0.0.6
 onnxruntime>=1.16.0
-
+reportlab>=4.1.0

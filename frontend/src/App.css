@@ -122,3 +122,76 @@
   color: var(--text-secondary);
   font-weight: normal;
 }
+
+.btn-pdf {
+  background: rgba(255, 95, 64, 0.1);
+  border: 1px solid var(--accent-red);
+  color: var(--accent-red) !important;
+  font-family: var(--font-hud);
+  font-size: 0.7rem;
+  padding: 8px 14px;
+  text-decoration: none;
+  border-radius: 6px;
+  text-align: center;
+  transition: all 0.3s ease;
+  white-space: nowrap;
+}
+
+.btn-pdf:hover {
+  background: var(--accent-red);
+  color: var(--bg-primary) !important;
+  box-shadow: 0 0 10px rgba(255, 95, 64, 0.4);
+}
+
+.verify-controls {
+  display: flex;
+  gap: 5px;
+  margin-left: auto;
+  align-items: center;
+}
+
+.verify-btn {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: var(--text-secondary);
+  font-family: var(--font-main);
+  font-size: 0.8rem;
+  font-weight: bold;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.25s ease;
+  outline: none;
+}
+
+.verify-btn.approve:hover, .verify-btn.approve.active {
+  background: var(--accent-green);
+  border-color: var(--accent-green);
+  color: var(--bg-primary);
+  box-shadow: 0 0 8px rgba(56, 208, 86, 0.5);
+}
+
+.verify-btn.reject:hover, .verify-btn.reject.active {
+  background: var(--accent-red);
+  border-color: var(--accent-red);
+  color: var(--text-primary);
+  box-shadow: 0 0 8px rgba(255, 95, 64, 0.5);
+}
+
+/* Verification State styling on Log Cards */
+.log-item.status-approved {
+  border-left: 4px solid var(--accent-green) !important;
+  box-shadow: inset 3px 0 10px rgba(56, 208, 86, 0.05);
+}
+
+.log-item.status-rejected {
+  border-left: 4px solid var(--accent-red) !important;
+  opacity: 0.4;
+  text-decoration: line-through;
+  box-shadow: inset 3px 0 10px rgba(255, 95, 64, 0.05);
+}
+

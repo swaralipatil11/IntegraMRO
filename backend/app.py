@@ -27,7 +27,7 @@ import csv
 import io
 
 # Import persistence layer
-from database import save_task, get_task, add_anomaly
+from database import save_task, get_task, add_anomaly, verify_anomaly
 
 # Create absolute directory paths relative to this file
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -433,6 +433,265 @@ async def export_task_csv(task_id: str):
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=inspection_report_{task_id[:8]}.csv"}
     )
+
+from pydantic import BaseModel
+import tempfile
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, KeepTogether
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+
+class VerifyStatusRequest(BaseModel):
+    status: str
+
+@app.post("/api/anomalies/{anomaly_id}/verify")
+async def verify_anomaly_endpoint(anomaly_id: int, req: VerifyStatusRequest):
+    if req.status not in ["approved", "rejected", "unverified"]:
+        raise HTTPException(status_code=400, detail="Invalid verification status")
+    verify_anomaly(anomaly_id, req.status)
+    return {"status": "success", "anomaly_id": anomaly_id, "verification_status": req.status}
+
+@app.get("/api/tasks/{task_id}/pdf")
+async def export_task_pdf(task_id: str):
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+        
+    # PDF generation buffer
+    pdf_buffer = io.BytesIO()
+    doc = SimpleDocTemplate(pdf_buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+    story = []
+    
+    # Styles
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'TitleStyle',
+        parent=styles['Heading1'],
+        fontName='Helvetica-Bold',
+        fontSize=20,
+        textColor=colors.HexColor('#161e2e'),
+        spaceAfter=15,
+        alignment=1 # Center
+    )
+    subtitle_style = ParagraphStyle(
+        'SubtitleStyle',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=10,
+        textColor=colors.HexColor('#4b5563'),
+        spaceAfter=15,
+        alignment=1
+    )
+    heading_style = ParagraphStyle(
+        'HeadingStyle',
+        parent=styles['Heading2'],
+        fontName='Helvetica-Bold',
+        fontSize=14,
+        textColor=colors.HexColor('#1e293b'),
+        spaceBefore=15,
+        spaceAfter=10
+    )
+    text_style = ParagraphStyle(
+        'TextStyle',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=10,
+        textColor=colors.HexColor('#334155'),
+        spaceAfter=6
+    )
+    th_style = ParagraphStyle(
+        'TableHeader',
+        parent=styles['Normal'],
+        fontName='Helvetica-Bold',
+        fontSize=9,
+        textColor=colors.white
+    )
+    tb_style = ParagraphStyle(
+        'TableCell',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=9,
+        textColor=colors.HexColor('#334155')
+    )
+    
+    # Title
+    story.append(Paragraph("MRO VISION CONTROL: STRUCTURAL INSPECTION REPORT", title_style))
+    story.append(Paragraph(f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Target ID: {task_id[:12]}...", subtitle_style))
+    story.append(Spacer(1, 10))
+    
+    # Task Information
+    info_data = [
+        [Paragraph("<b>Inspection ID:</b>", text_style), Paragraph(task_id, text_style)],
+        [Paragraph("<b>Lead Inspector:</b>", text_style), Paragraph("Swarali Patil", text_style)],
+        [Paragraph("<b>Date Created:</b>", text_style), Paragraph(task.get("created_at", "N/A"), text_style)],
+        [Paragraph("<b>Pipeline Status:</b>", text_style), Paragraph(task.get("status", "N/A").upper(), text_style)],
+        [Paragraph("<b>Source Framerate:</b>", text_style), Paragraph(f"{task.get('fps', 'N/A')} FPS", text_style)],
+    ]
+    info_table = Table(info_data, colWidths=[120, 420])
+    info_table.setStyle(TableStyle([
+        ('VALIGN', (0,0), (-1,-1), 'TOP'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+        ('TOPPADDING', (0,0), (-1,-1), 2),
+    ]))
+    story.append(info_table)
+    story.append(Spacer(1, 15))
+    
+    # Anomaly Counts Summary
+    results = task.get("results", [])
+    counts = {"crack": 0, "rebar": 0, "spalling": 0, "unexposed bar": 0}
+    for r in results:
+        cls = r.get("defect_metadata", {}).get("detected_class")
+        if cls in counts:
+            counts[cls] += 1
+            
+    summary_data = [
+        [Paragraph("Defect Type", th_style), Paragraph("Identified Counts", th_style)],
+        [Paragraph("Concrete Crack (CRK)", tb_style), Paragraph(str(counts["crack"]), tb_style)],
+        [Paragraph("Exposed Structural Rebar (RBR)", tb_style), Paragraph(str(counts["rebar"]), tb_style)],
+        [Paragraph("Spalling Fracture (SPL)", tb_style), Paragraph(str(counts["spalling"]), tb_style)],
+        [Paragraph("Unexposed Subsurface Bar (UXB)", tb_style), Paragraph(str(counts["unexposed bar"]), tb_style)],
+        [Paragraph("<b>Total Logged Anomalies</b>", tb_style), Paragraph(f"<b>{len(results)}</b>", tb_style)]
+    ]
+    summary_table = Table(summary_data, colWidths=[270, 270])
+    summary_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1e293b')),
+        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+        ('TOPPADDING', (0,0), (-1,-1), 6),
+        ('ROWBACKGROUNDS', (0,1), (-1,-2), [colors.HexColor('#f8fafc'), colors.white]),
+        ('LINEBELOW', (0,-1), (-1,-1), 1.5, colors.HexColor('#94a3b8')),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e1')),
+    ]))
+    story.append(Paragraph("Inspection Summary", heading_style))
+    story.append(summary_table)
+    story.append(Spacer(1, 15))
+    
+    # Top Anomaly Image crops
+    video_filename = f"{task_id}_processed.mp4"
+    video_path = os.path.join(STATIC_VIDEOS_DIR, video_filename)
+    temp_files = []
+    
+    if os.path.exists(video_path) and len(results) > 0:
+        story.append(Paragraph("Visual Evidence (Top Anomalies)", heading_style))
+        # Sort anomalies by confidence descending
+        sorted_results = sorted(results, key=lambda x: x.get("defect_metadata", {}).get("confidence_score", 0.0), reverse=True)
+        top_anomalies = sorted_results[:3]
+        
+        cap = cv2.VideoCapture(video_path)
+        if cap.isOpened():
+            for idx, anomaly in enumerate(top_anomalies):
+                meta = anomaly.get("defect_metadata", {})
+                telemetry = anomaly.get("payload_telemetry", {})
+                cls = meta.get("detected_class", "N/A")
+                conf = meta.get("confidence_score", 0.0)
+                pos = telemetry.get("estimated_tunnel_position_m", 0.0)
+                frame_idx = anomaly.get("frame_index", 0)
+                bbox = meta.get("bounding_box_xyxy", [0, 0, 0, 0])
+                status = anomaly.get("verification_status", "unverified")
+                
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                if ret:
+                    # Crop bounding box region
+                    h, w, _ = frame.shape
+                    x1, y1, x2, y2 = [int(c) for c in bbox]
+                    x1 = max(0, x1 - 15)
+                    y1 = max(0, y1 - 15)
+                    x2 = min(w, x2 + 15)
+                    y2 = min(h, y2 + 15)
+                    
+                    if (x2 - x1) > 0 and (y2 - y1) > 0:
+                        crop_patch = frame[y1:y2, x1:x2]
+                        # Save to temp file
+                        temp_file = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+                        temp_filename = temp_file.name
+                        temp_file.close()
+                        
+                        cv2.imwrite(temp_filename, crop_patch)
+                        temp_files.append(temp_filename)
+                        
+                        # Build layout for this anomaly
+                        desc_text = f"<b>Defect {idx+1}:</b> {cls.upper()} ({conf*100:.1f}% Confidence) at Tunnel Marker <b>{pos:.2f} m</b> (Frame: {frame_idx}). Status: <b>{status.upper()}</b>"
+                        
+                        # Scaling the image crop to display neatly in reportlab
+                        img_w = 160
+                        aspect = float(crop_patch.shape[0]) / float(crop_patch.shape[1])
+                        img_h = img_w * aspect
+                        # Restrict height to a reasonable size
+                        if img_h > 120:
+                            img_h = 120
+                            img_w = img_h / aspect
+                            
+                        element_img = Image(temp_filename, width=img_w, height=img_h)
+                        
+                        cell_desc = Paragraph(desc_text, text_style)
+                        anomaly_cell_data = [[element_img, cell_desc]]
+                        anomaly_cell_table = Table(anomaly_cell_data, colWidths=[180, 360])
+                        anomaly_cell_table.setStyle(TableStyle([
+                            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                            ('ALIGN', (0,0), (0,0), 'CENTER'),
+                            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#f8fafc')),
+                            ('PADDING', (0,0), (-1,-1), 8),
+                            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#e2e8f0')),
+                        ]))
+                        
+                        # Keep elements together to avoid breaking across pages mid-card
+                        story.append(KeepTogether([anomaly_cell_table, Spacer(1, 8)]))
+                        
+            cap.release()
+    
+    # Detailed Telemetry Log Table
+    story.append(Paragraph("Detailed Telemetry Logs", heading_style))
+    log_data = [[
+        Paragraph("Frame", th_style),
+        Paragraph("Marker", th_style),
+        Paragraph("Class", th_style),
+        Paragraph("Confidence", th_style),
+        Paragraph("Verification Status", th_style)
+    ]]
+    
+    for r in results[:50]: # Limit to first 50 logs to keep PDF small
+        meta = r.get("defect_metadata", {})
+        telemetry = r.get("payload_telemetry", {})
+        log_data.append([
+            Paragraph(str(r.get("frame_index")), tb_style),
+            Paragraph(f"{telemetry.get('estimated_tunnel_position_m', 0.0):.2f} m", tb_style),
+            Paragraph(meta.get("detected_class", "N/A").upper(), tb_style),
+            Paragraph(f"{meta.get('confidence_score', 0.0)*100:.1f}%", tb_style),
+            Paragraph(r.get("verification_status", "unverified").upper(), tb_style)
+        ])
+        
+    log_table = Table(log_data, colWidths=[80, 110, 110, 110, 130])
+    log_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1e293b')),
+        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+        ('TOPPADDING', (0,0), (-1,-1), 4),
+        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.HexColor('#f8fafc'), colors.white]),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e1')),
+    ]))
+    story.append(log_table)
+    if len(results) > 50:
+        story.append(Paragraph(f"<i>* Showing top 50 anomalies of {len(results)} total anomalies logged.</i>", subtitle_style))
+        
+    doc.build(story)
+    
+    # Clean up temp files
+    for temp_file_path in temp_files:
+        try:
+            os.remove(temp_file_path)
+        except:
+            pass
+        
+    pdf_buffer.seek(0)
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=inspection_report_{task_id[:8]}.pdf"}
+    )
+
 
 
 if __name__ == "__main__":

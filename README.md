@@ -164,3 +164,7 @@ This method orchestrates both services and compiles system libraries (FFmpeg, sy
 - **SQLite WAL & Timeout:** SQLite database queries use connection timeouts (`30.0s`) and Write-Ahead Logging (WAL) mode to resolve write-locking conflicts under concurrent task telemetry uploads.
 - **Memory Optimization:** Large file video uploads are read and written to disk in `1MB` chunks, preventing edge-deployment memory bloat or out-of-memory container crashes.
 - **Web-Playable Outputs:** Completed inspection videos are automatically re-encoded to standard H.264 (`yuv420p` color format) with fast-start metadata (`+faststart`) to guarantee immediate progressive playback and seeking inside all standard web browsers.
+- **Human-in-the-Loop MLOps Validation:** Support for verifying or rejecting model anomalies directly from the frontend logs, updating state parameters and persistence flags dynamically.
+- **Dynamic Schema Migration:** The SQLite persistence layer executes schema validation scans transparently on backend launch, modifying table schemas in-place to append verification status columns if legacy structures are detected.
+- **In-Memory Streaming Reports:** PDF inspection summaries (with customized Lead Inspector headers and cropped anomaly visual evidence extracted via OpenCV) and CSV data tables are built in-memory and streamed directly over chunked HTTP buffers to prevent local SSD wear.
+

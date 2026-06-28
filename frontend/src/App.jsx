@@ -641,6 +641,35 @@ function App() {
     }
   };
 
+  const handleVerifyAnomaly = async (anomalyId, status) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/anomalies/${anomalyId}/verify`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ status })
+      });
+      
+      if (!response.ok) throw new Error("Verification request failed");
+      
+      // Update local state reactively
+      setVideoAlerts(prevAlerts => {
+        return prevAlerts.map(alert => {
+          if (alert.id === anomalyId) {
+            return {
+              ...alert,
+              verification_status: status
+            };
+          }
+          return alert;
+        });
+      });
+    } catch (err) {
+      console.error("Failed to verify anomaly:", err);
+    }
+  };
+
   const resetUploadState = () => {
     setSelectedFile(null);
     setUploadProgress(0);
@@ -941,14 +970,24 @@ function App() {
                   <option value="unexposed bar">UNEXPOSED BAR</option>
                 </select>
                 {activeTab === 'upload' && taskId && (
-                  <a 
-                    href={`${API_BASE_URL}/api/tasks/${taskId}/export`} 
-                    download 
-                    className="btn btn-export"
-                    title="Export CSV Telemetry"
-                  >
-                    EXPORT CSV
-                  </a>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <a 
+                      href={`${API_BASE_URL}/api/tasks/${taskId}/export`} 
+                      download 
+                      className="btn btn-export"
+                      title="Export CSV Telemetry"
+                    >
+                      CSV
+                    </a>
+                    <a 
+                      href={`${API_BASE_URL}/api/tasks/${taskId}/pdf`} 
+                      download 
+                      className="btn btn-pdf"
+                      title="Export PDF Report"
+                    >
+                      PDF
+                    </a>
+                  </div>
                 )}
               </div>
               <div className="filter-row filter-confidence-container">
@@ -1020,15 +1059,32 @@ function App() {
                       const cls = alert.defect_metadata.detected_class;
                       const conf = alert.defect_metadata.confidence_score;
                       const pos = alert.payload_telemetry.estimated_tunnel_position_m;
+                      const status = alert.verification_status || 'unverified';
                       return (
                         <div 
                           key={index} 
-                          className={`log-item ${cls}`} 
+                          className={`log-item ${cls} status-${status}`} 
                           onClick={() => handleLogClick(alert)}
                         >
                           <div className="log-row-top">
                             <span className={`defect-badge ${cls}`}>{cls}</span>
                             <span className="log-confidence">{(conf * 100).toFixed(0)}% CONF</span>
+                            <div className="verify-controls" onClick={(e) => e.stopPropagation()}>
+                              <button 
+                                className={`verify-btn approve ${status === 'approved' ? 'active' : ''}`}
+                                onClick={() => handleVerifyAnomaly(alert.id, 'approved')}
+                                title="Approve Anomaly"
+                              >
+                                ✓
+                              </button>
+                              <button 
+                                className={`verify-btn reject ${status === 'rejected' ? 'active' : ''}`}
+                                onClick={() => handleVerifyAnomaly(alert.id, 'rejected')}
+                                title="Reject Anomaly"
+                              >
+                                ✗
+                              </button>
+                            </div>
                           </div>
                           <div className="log-meta">
                             <span>Marker: {pos} m</span>

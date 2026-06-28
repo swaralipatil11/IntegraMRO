@@ -44,10 +44,22 @@ def init_db():
         bbox_y2 REAL NOT NULL,
         frame_index INTEGER NOT NULL,
         estimated_position REAL NOT NULL,
+        status TEXT DEFAULT 'unverified',
         FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE
     )
     """)
     
+    # Schema Migration Check: Alter table if status column is missing
+    cursor.execute("PRAGMA table_info(anomalies)")
+    columns = [col[1] for col in cursor.fetchall()]
+    if "status" not in columns:
+        try:
+            cursor.execute("ALTER TABLE anomalies ADD COLUMN status TEXT DEFAULT 'unverified'")
+            conn.commit()
+            print("Successfully migrated database schema: added status column to anomalies table.")
+        except Exception as migration_error:
+            print(f"Migration warning: failed to add status column: {migration_error}")
+            
     conn.commit()
     conn.close()
 
@@ -89,8 +101,10 @@ def get_task(task_id: str):
     results = []
     for anomaly in anomalies:
         results.append({
+            "id": anomaly["id"],
             "timestamp": anomaly["timestamp"],
             "system_status": "ALERT_TRIGGERED",
+            "verification_status": anomaly["status"] if "status" in anomaly.keys() else "unverified",
             "payload_telemetry": {
                 "estimated_tunnel_position_m": anomaly["estimated_position"],
                 "sensor_id": "MRO_VISION_CAM_01"
@@ -118,6 +132,14 @@ def add_anomaly(task_id: str, timestamp: str, class_name: str, confidence: float
     
     conn.commit()
     conn.close()
+
+def verify_anomaly(anomaly_id: int, status: str):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE anomalies SET status = ? WHERE id = ?", (status, anomaly_id))
+    conn.commit()
+    conn.close()
+
 
 # Initialize on import
 init_db()
